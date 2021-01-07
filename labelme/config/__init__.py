@@ -29,7 +29,7 @@ def update_dict(target_dict, new_dict, validate_item=None):
 
 def get_default_config():
     config_file = osp.join(here, 'default_config.yaml')
-    with open(config_file) as f:
+    with open(config_file, encoding='utf-8') as f:
         config = yaml.safe_load(f)
 
     # save default config to ~/.labelmerc
@@ -68,7 +68,7 @@ def get_config(config_file_or_yaml=None, config_from_args=None):
     if config_file_or_yaml is not None:
         config_from_yaml = yaml.safe_load(config_file_or_yaml)
         if not isinstance(config_from_yaml, dict):
-            with open(config_from_yaml) as f:
+            with open(config_from_yaml, encoding='utf-8') as f:  # 执行编码
                 logger.info(
                     'Loading config file from: {}'.format(config_from_yaml)
                 )

@@ -1,4 +1,4 @@
-auto_save: false
+auto_save: true  # 设置自动保存
 display_label_popup: true
 store_data: true
 keep_prev: false
@@ -7,9 +7,9 @@ logger_level: info
 
 flags: null
 label_flags: null
-labels: null
+labels: [翡翠,手镯,戒指,挂件,耳饰,手链,项链,原石,平安扣,无事牌,山水牌,佛牌,观音牌,葫芦,如意,蛋面,貔貅,福豆,福瓜,福袋,佛公,观音,渡母,如来,叶子]
 file_search: null
-sort_labels: true
+sort_labels: false  # 不自动排序
 validate_label: null
 
 default_shape_color: null
@@ -18,6 +18,12 @@ shift_auto_shape_color: 0
 label_colors: null
 
 # main
+# 添加商品信息
+info_dock:
+  show: true
+  closable: true
+  movable: true
+  floatable: true
 flag_dock:
   show: true
   closable: true
@@ -79,7 +85,8 @@ shortcuts:
   create_point: null
   create_linestrip: null
   edit_polygon: Ctrl+J
-  delete_polygon: Delete
+  # delete_polygon: Delete
+  delete_polygon: null
   duplicate_polygon: Ctrl+D
   undo: Ctrl+Z
   undo_last_point: [Ctrl+Z, Backspace]

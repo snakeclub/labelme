@@ -30,6 +30,12 @@ from labelme.widgets import ToolBar
 from labelme.widgets import UniqueLabelQListWidget
 from labelme.widgets import ZoomWidget
 
+# CC专用的类库
+from labelme.utils.cclib import CommonLib, TFRecordCreater
+from HiveNetLib.base_tools.run_tool import RunTool
+from HiveNetLib.base_tools.file_tool import FileTool
+import json
+
 
 # FIXME
 # - [medium] Set max zoom value to something big enough for FitWidth/Window
@@ -91,6 +97,25 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.labelList = LabelListWidget()
         self.lastOpenDir = None
+        self.dirname = None
+
+        # 增加一个商品信息展示
+        self.info_dock = self.info_layout = None
+        self.info_dock = QtWidgets.QDockWidget('商品信息', self)
+        self.info_dock.setObjectName('Infos')
+        self.info_widget = QtWidgets.QWidget()
+        self.info_layout = QtWidgets.QVBoxLayout()
+        # 添加一个删除是否提示的checkbox
+        self.delete_Warning_check = QtWidgets.QCheckBox('删除对象告警提示')
+        self.delete_Warning_check.setChecked(True)
+        self.info_layout.addWidget(self.delete_Warning_check)
+        # 添加商品信息展示清单
+        self.product_info = QtWidgets.QListWidget()
+        self.product_info.doubleClicked.connect(self.product_item_double_clicked)
+        self.info_layout.addWidget(self.product_info)
+        # 添加到容器中
+        self.info_widget.setLayout(self.info_layout)
+        self.info_dock.setWidget(self.info_widget)
 
         self.flag_dock = self.flag_widget = None
         self.flag_dock = QtWidgets.QDockWidget(self.tr('Flags'), self)
@@ -170,7 +195,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(scrollArea)
 
         features = QtWidgets.QDockWidget.DockWidgetFeatures()
-        for dock in ['flag_dock', 'label_dock', 'shape_dock', 'file_dock']:
+        for dock in ['info_dock', 'flag_dock', 'label_dock', 'shape_dock', 'file_dock']:
             if self._config[dock]['closable']:
                 features = features | QtWidgets.QDockWidget.DockWidgetClosable
             if self._config[dock]['floatable']:
@@ -181,6 +206,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if self._config[dock]['show'] is False:
                 getattr(self, dock).setVisible(False)
 
+        self.addDockWidget(Qt.RightDockWidgetArea, self.info_dock)  # 添加商品信息容器
         self.addDockWidget(Qt.RightDockWidgetArea, self.flag_dock)
         self.addDockWidget(Qt.RightDockWidgetArea, self.label_dock)
         self.addDockWidget(Qt.RightDockWidgetArea, self.shape_dock)
@@ -189,6 +215,21 @@ class MainWindow(QtWidgets.QMainWindow):
         # Actions
         action = functools.partial(utils.newAction, self)
         shortcuts = self._config['shortcuts']
+
+        # 添加CC自定义菜单
+        getDomTag = action('解析商品信息', self.deal_dom_file, '',
+                           'getDomTag', '将解析当前文件清单的Dom文件生成商品信息')
+        createProductXls = action('生成商品信息汇总', self.create_info_xls_file, '',
+                                  'createProductXls', '将当前目录的产品信息生成excel汇总文件')
+        cleanProductFiles = action('清理商品文件', self.clean_product_files, '',
+                                   'cleanProductFiles', '清理商品文件内容')
+        labelimgToTFRecord = action('LabelImg生成TFRecord', self.labelimg_to_tfrecord, '',
+                                    'labelimgToTFRecord', '将LabelImg的标注生成TFRecord文件')
+        labelimgFlagsCount = action('LabelImg标注统计', self.labelimg_flags_count, '',
+                                    'labelimgFlagsCount', '统计指定目录中的labelimg标记对应标签的数量')
+        createCCTypePbtxt = action('创建CC的款式labelmap.pbtxt文件', self.create_cc_type_pbtxt, '',
+                                   'createCCTypePbtxt', '创建CC的款式labelmap.pbtxt文件')
+
         quit = action(self.tr('&Quit'), self.close, shortcuts['quit'], 'quit',
                       self.tr('Quit application'))
         open_ = action(self.tr('&Open'),
@@ -509,6 +550,7 @@ class MainWindow(QtWidgets.QMainWindow):
             file=self.menu(self.tr('&File')),
             edit=self.menu(self.tr('&Edit')),
             view=self.menu(self.tr('&View')),
+            cc=self.menu('&CC处理'),
             help=self.menu(self.tr('&Help')),
             recentFiles=QtWidgets.QMenu(self.tr('Open &Recent')),
             labelList=labelMenu,
@@ -537,6 +579,7 @@ class MainWindow(QtWidgets.QMainWindow):
         utils.addActions(
             self.menus.view,
             (
+                self.info_dock.toggleViewAction(),
                 self.flag_dock.toggleViewAction(),
                 self.label_dock.toggleViewAction(),
                 self.shape_dock.toggleViewAction(),
@@ -555,6 +598,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 fitWidth,
                 None,
             ),
+        )
+        utils.addActions(
+            self.menus.cc,
+            (getDomTag, createProductXls, cleanProductFiles,
+             labelimgToTFRecord, labelimgFlagsCount, createCCTypePbtxt,),
         )
 
         self.menus.file.aboutToShow.connect(self.updateFileMenu)
@@ -1342,6 +1390,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.addRecentFile(self.filename)
         self.toggleActions(True)
         self.status(self.tr("Loaded %s") % osp.basename(str(filename)))
+
+        # 补充获取图片的商品信息
+        _info = CommonLib.get_product_info_dict(self.filename)
+        self.product_info.clear()
+        for _key in _info.keys():
+            self.product_info.addItem('【%s】 %s' % (_key, _info[_key]))
+
         return True
 
     def resizeEvent(self, event):
@@ -1409,6 +1464,49 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         items = [i.toLocalFile() for i in event.mimeData().urls()]
         self.importDroppedImageFiles(items)
+
+    def keyPressEvent(self, ev):
+        key = ev.key()
+        if key == QtCore.Qt.Key_Delete:
+            # 点击删除按钮
+            if len(self.canvas.selectedShapes) == 0:
+                # 没有选中形状，删除文件
+                self.delete_image_file()
+            else:
+                # 选中了形状，删除形状
+                self.deleteSelectedShape()
+        elif key == QtCore.Qt.Key_Left:
+            # 选中上一文件夹
+            _current_row = self.fileListWidget.currentRow()
+            _path = os.path.split(self.fileListWidget.item(_current_row).text())[0]
+            _is_found = False
+            while _current_row > 0:
+                _current_row -= 1
+                if _is_found:
+                    # 已找到，只是需要找第一个
+                    if os.path.split(self.fileListWidget.item(_current_row).text())[0] != _path:
+                        _current_row += 1
+                        break
+                else:
+                    if os.path.split(self.fileListWidget.item(_current_row).text())[0] != _path:
+                        # 找到了上一个文件夹, 设置标签，还要继续循环找第一个
+                        _path = os.path.split(self.fileListWidget.item(_current_row).text())[0]
+                        _is_found = True
+            if _is_found:
+                # 设置当前选中
+                self.fileListWidget.setCurrentRow(_current_row)
+        elif key == QtCore.Qt.Key_Right:
+            # 选中下一文件夹
+            _current_row = self.fileListWidget.currentRow()
+            _path = os.path.split(self.fileListWidget.item(_current_row).text())[0]
+            while _current_row < self.fileListWidget.count() - 1:
+                _current_row += 1
+                if os.path.split(self.fileListWidget.item(_current_row).text())[0] != _path:
+                    # 找到了下一个文件夹
+                    self.fileListWidget.setCurrentRow(_current_row)
+                    break
+        elif key in [QtCore.Qt.Key_Up, QtCore.Qt.Key_Down]:
+            self.fileListWidget.keyPressEvent(ev)
 
     # User Dialogs #
 
@@ -1585,6 +1683,34 @@ class MainWindow(QtWidgets.QMainWindow):
 
         return label_file
 
+    def product_item_double_clicked(self, modelindex: QtCore.QModelIndex) -> None:
+        """
+        商品信息按钮双击进行编辑
+
+        @param {QModelIndex} modelindex - <description>
+
+        @returns {None} - <description>
+        """
+        _row = modelindex.row()
+        _item = self.product_info.item(_row)
+        _value = _item.text()
+        _index = _value.find('】')
+        _propname = _value[0:_index].strip('【】')
+        _propvalue = _value[_index + 2:]  # 加上一个空格
+        _new_value, ok = QtWidgets.QInputDialog.getText(
+            self, "编辑商品属性", "请输入要设置的【%s】值：" % _propname, QtWidgets.QLineEdit.Normal, _propvalue)
+
+        # 设置值
+        if ok:
+            ok = CommonLib.change_product_info_file(self.filename, _propname, _new_value)
+
+        # 修改显示
+        if ok:
+            _item.setText('【%s】 %s' % (_propname, _new_value))
+        else:
+            # 提示错误
+            QtWidgets.QMessageBox.warning(self, "告警", "编辑商品属性失败", QtWidgets.QMessageBox.Yes)
+
     def deleteFile(self):
         mb = QtWidgets.QMessageBox
         msg = self.tr('You are about to permanently delete this label file, '
@@ -1603,7 +1729,428 @@ class MainWindow(QtWidgets.QMainWindow):
 
             self.resetState()
 
+    def deal_dom_file(self, _value=False):
+        """
+        解析当前文件清单的dom文件生成商品信息
+
+        @param {bool} _value=False - <description>
+        """
+        # 获取需要处理的文件清单
+        _deal_dir = self.dirname
+        if self.dirname is None:
+            # QtWidgets.QMessageBox(QtWidgets.QMessageBox.Warning, '警告', '未打开文件目录！').exec()
+            _deal_dir = str(QtWidgets.QFileDialog.getExistingDirectory(
+                self,
+                self.tr('%s - Open Directory') % __appname__,
+                '',
+                QtWidgets.QFileDialog.ShowDirsOnly |
+                QtWidgets.QFileDialog.DontResolveSymlinks))
+
+            if not _deal_dir:
+                return
+
+        _file_list = CommonLib.get_dom_file_list(_deal_dir)
+        if len(_file_list) == 0:
+            return
+
+        # 判断是否需要重做已有文件的
+        _redo = False
+        _result = QtWidgets.QMessageBox().question(
+            self, "询问", '对于已有info.json的商品是否重新解析？',
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No
+        )
+        if _result == QtWidgets.QMessageBox.Yes:
+            _redo = True
+
+        pd = QtWidgets.QProgressDialog(self)
+        pd.setMinimumSize(500, 200)
+        pd.setWindowTitle("解析dom文件商品信息")
+        pd.setLabelText("处理进度")
+        pd.setCancelButtonText("取消")
+
+        pd.setRange(0, len(_file_list))
+        pd.show()
+        timer = QtCore.QTimer(pd)
+
+        RunTool.set_global_var(
+            'DEAL_DOM_FILE_TEMP',
+            {
+                'index': 0,
+                'file_list': _file_list,
+                'fail_list': [],
+                'redo': _redo
+            }
+        )
+
+        def deal_with_dom_file():
+            _para = RunTool.get_global_var('DEAL_DOM_FILE_TEMP')
+            _file_list = _para['file_list']
+
+            # 通过timer逐个文件进行处理
+            if not CommonLib.analyse_dom_file(_file_list[_para['index']], redo=_para['redo']):
+                # 处理失败，加入失败清单
+                _para['fail_list'].append(_file_list[_para['index']])
+                # pd.cancel()  # 失败取消继续执行
+
+            # 更新进展
+            _para['index'] += 1
+            pd.setValue(_para['index'])
+
+            # 判断是否已全部处理完成
+            if _para['index'] >= pd.maximum():
+                # 已全部执行完成
+                timer.stop()
+                if len(_para['fail_list']) == 0:
+                    pd.setWindowTitle("解析dom文件商品信息")
+                    pd.setLabelText('解析dom文件商品信息完成')
+
+                else:
+                    # 存在失败的情况
+                    pd.setWindowTitle("解析dom文件商品信息")
+                    pd.setLabelText('存在处理失败文件:\r\n' + '\r\n'.join(_para['fail_list']))
+
+                # 显示提示
+                pd.setCancelButtonText("关闭")
+                pd.show()
+
+        timer.timeout.connect(deal_with_dom_file)
+        timer.start(10)
+
+        pd.canceled.connect(timer.stop)
+
+    def create_info_xls_file(self, _value=False):
+        """
+        将当前目录的产品信息生成excel汇总文件
+
+        @param {bool} _value=False - <description>
+        """
+        # 获取需要处理的文件清单
+        _deal_dir = self.dirname
+        if self.dirname is None:
+            _deal_dir = str(QtWidgets.QFileDialog.getExistingDirectory(
+                self,
+                self.tr('%s - Open Directory') % __appname__,
+                '',
+                QtWidgets.QFileDialog.ShowDirsOnly |
+                QtWidgets.QFileDialog.DontResolveSymlinks))
+
+            if not _deal_dir:
+                return
+
+        pd = QtWidgets.QProgressDialog(self)
+        pd.setMinimumSize(500, 200)
+        pd.setWindowTitle("生成商品信息汇总文件")
+        pd.setLabelText("处理进度")
+        # pd.setCancelButtonText("取消")
+        pd.setRange(0, 1)
+        pd.setValue(0)
+        pd.show()
+
+        if CommonLib.product_info_to_xls(_deal_dir):
+            # 处理成功
+            pd.setLabelText('处理成功')
+        else:
+            # 处理失败
+            pd.setLabelText('处理失败')
+
+        # 显示提示
+        pd.setCancelButtonText("关闭")
+        pd.setValue(1)
+        pd.show()
+
+    def clean_product_files(self, _value=False):
+        """
+        清理商品信息文件夹内容
+
+        @param {bool} _value=False - <description>
+        """
+        # 获取需要处理的文件清单
+        _deal_dir = self.dirname
+        if self.dirname is None:
+            _deal_dir = str(QtWidgets.QFileDialog.getExistingDirectory(
+                self,
+                self.tr('%s - Open Directory') % __appname__,
+                '',
+                QtWidgets.QFileDialog.ShowDirsOnly |
+                QtWidgets.QFileDialog.DontResolveSymlinks))
+
+            if not _deal_dir:
+                return
+
+        pd = QtWidgets.QProgressDialog(self)
+        pd.setMinimumSize(500, 200)
+        pd.setWindowTitle("清理商品信息文件")
+        pd.setLabelText("处理进度")
+
+        timer = QtCore.QTimer(pd)
+
+        _iter_list = CommonLib.clean_file_path(_deal_dir)
+
+        RunTool.set_global_var(
+            'CLEAN_PRODUCT_FILES_TEMP',
+            {
+                'result_iter': _iter_list,
+                'last_result': None
+            }
+        )
+
+        def show_progress():
+            _para = RunTool.get_global_var('CLEAN_PRODUCT_FILES_TEMP')
+            _progress = _para['result_iter'].__next__()
+
+            if _progress is None or not _progress[2] or _progress[0] == _progress[1]:
+                # 满足停止条件
+                timer.stop()
+                if _progress is None:
+                    _progress = _para['last_result']
+
+                if _progress[2]:
+                    pd.setValue(_progress[0])
+                    pd.setLabelText('处理成功！')
+                else:
+                    pd.setLabelText('处理失败！')
+
+                # 显示提示
+                pd.setCancelButtonText("关闭")
+                pd.show()
+                return
+
+            _para['last_result'] = _progress
+
+            if _progress[1] != pd.maximum():
+                pd.setRange(0, _progress[1])
+                pd.show()
+
+            # 显示进度
+            pd.setValue(_progress[0])
+
+        timer.timeout.connect(show_progress)
+        timer.start(10)
+
+        pd.canceled.connect(timer.stop)
+
+    def delete_image_file(self):
+        """
+        删除当前图片文件
+        """
+        if self.filename is not None:
+            if self.delete_Warning_check.isChecked():
+                _result = QtWidgets.QMessageBox().question(
+                    self, "询问", '确认删除文件：\r\n%s' % self.filename,
+                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                    QtWidgets.QMessageBox.Yes
+                )
+                if not _result == QtWidgets.QMessageBox.Yes:
+                    return
+
+            _file = self.filename
+            _row = self.fileListWidget.currentRow()
+
+            # 转到下一个图片
+            self.openNextImg()
+
+            if _file == self.filename:
+                # 已经是最后一个图片
+                self.openPrevImg()
+                if _file == self.filename:
+                    self.closeFile()
+
+            # 从列表清单中删除_row
+            self.fileListWidget.takeItem(_row)
+            # self.imageList.remove(_file)  # 在列表删除时已自动删除
+
+            # 开始执行删除文件操作
+            FileTool.remove_file(_file)
+
+            # 提示
+            QtWidgets.QMessageBox.information(self, "提示", "文件删除成功", QtWidgets.QMessageBox.Yes)
+
+    def labelimg_to_tfrecord(self, _value=False):
+        """
+        将LabelImg标注转换为TFRecord文件
+
+        @param {bool} _value=False - <description>
+        """
+        # 获取需要处理的文件路径
+        _deal_dir = str(QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            self.tr('%s - Open Directory') % __appname__,
+            '',
+            QtWidgets.QFileDialog.ShowDirsOnly |
+            QtWidgets.QFileDialog.DontResolveSymlinks))
+
+        if not _deal_dir:
+            return
+
+        # 拆分文件数量
+        _num_per_file, ok = QtWidgets.QInputDialog.getText(
+            self, "拆分文件参数", "请输入每个TFRecord文件包含的图片数量(不拆分传空或0)：", QtWidgets.QLineEdit.Normal, '0')
+
+        if _num_per_file == '':
+            _num_per_file = None
+        else:
+            _num_per_file = int(_num_per_file)
+            if _num_per_file <= 0:
+                _num_per_file = None
+
+        # 进度显示
+        pd = QtWidgets.QProgressDialog(self)
+        pd.setMinimumSize(500, 200)
+        pd.setWindowTitle("生成LabelImg标注的TFRecord文件")
+        pd.setLabelText("处理进度")
+        pd.setCancelButtonText("取消")
+
+        timer = QtCore.QTimer(pd)
+
+        _iter_list = TFRecordCreater.labelimg_to_tfrecord(
+            _deal_dir, os.path.join(_deal_dir, '%s.record' % FileTool.get_dir_name(_deal_dir)),
+            _num_per_file, is_cc=True
+        )
+
+        RunTool.set_global_var(
+            'LABELIMG_TO_TFRECORD_TEMP',
+            {
+                'result_iter': _iter_list,
+                'last_result': None
+            }
+        )
+
+        def show_progress():
+            _para = RunTool.get_global_var('LABELIMG_TO_TFRECORD_TEMP')
+            _progress = _para['result_iter'].__next__()
+
+            if _progress is None or not _progress[2] or _progress[0] == _progress[1]:
+                # 满足停止条件
+                timer.stop()
+                if _progress is None:
+                    _progress = _para['last_result']
+
+                if _progress[2]:
+                    pd.setValue(_progress[0])
+                    pd.setLabelText('处理成功！')
+                else:
+                    pd.setLabelText('处理失败！')
+
+                # 显示提示
+                pd.setCancelButtonText("关闭")
+                pd.show()
+                return
+
+            _para['last_result'] = _progress
+
+            if _progress[1] != pd.maximum():
+                pd.setRange(0, _progress[1])
+                pd.show()
+
+            # 显示进度
+            pd.setValue(_progress[0])
+
+        timer.timeout.connect(show_progress)
+        timer.start(10)
+
+        pd.canceled.connect(timer.stop)
+
+    def labelimg_flags_count(self, _value=False):
+        """
+        统计指定目录中的labelimg标记对应标签的数量
+
+        @param {bool} _value=False - <description>
+        """
+        # 获取需要处理的文件路径
+        _deal_dir = str(QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            self.tr('%s - Open Directory') % __appname__,
+            '',
+            QtWidgets.QFileDialog.ShowDirsOnly |
+            QtWidgets.QFileDialog.DontResolveSymlinks))
+
+        if not _deal_dir:
+            return
+
+        # 进度显示
+        pd = QtWidgets.QProgressDialog(self)
+        pd.setMinimumSize(500, 200)
+        pd.setWindowTitle("统计labelimg标记数量")
+        pd.setLabelText("处理进度")
+        pd.setCancelButtonText("取消")
+
+        timer = QtCore.QTimer(pd)
+
+        _iter_list = TFRecordCreater.labelimg_flags_count(
+            _deal_dir
+        )
+
+        RunTool.set_global_var(
+            'LABELIMG_FLAGS_COUNT_TEMP',
+            {
+                'result_iter': _iter_list,
+                'last_result': None
+            }
+        )
+
+        def show_progress():
+            _para = RunTool.get_global_var('LABELIMG_FLAGS_COUNT_TEMP')
+            _progress = _para['result_iter'].__next__()
+
+            if _progress is None or not _progress[2] or _progress[0] == _progress[1]:
+                # 满足停止条件
+                timer.stop()
+                if _progress is None:
+                    _progress = _para['last_result']
+
+                if _progress[2]:
+                    pd.setValue(_progress[0])
+                    _count_str = '%s:\n%s' % (
+                        'LabelImg标签统计', json.dumps(_progress[3], ensure_ascii=False, indent=4)
+                    )
+                    print(_count_str)
+                    pd.setLabelText(_count_str)
+                else:
+                    pd.setLabelText('处理失败！')
+
+                # 显示提示
+                pd.setCancelButtonText("关闭")
+                pd.show()
+                return
+
+            _para['last_result'] = _progress
+
+            if _progress[1] != pd.maximum():
+                pd.setRange(0, _progress[1])
+                pd.show()
+
+            # 显示进度
+            pd.setValue(_progress[0])
+
+        timer.timeout.connect(show_progress)
+        timer.start(10)
+
+        pd.canceled.connect(timer.stop)
+
+    def create_cc_type_pbtxt(self, _value=False):
+        """
+        创建CC的款式labelmap.pbtxt文件
+        """
+        # 获取需要处理的文件路径
+        _deal_dir = str(QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            self.tr('%s - Open Directory') % __appname__,
+            '',
+            QtWidgets.QFileDialog.ShowDirsOnly |
+            QtWidgets.QFileDialog.DontResolveSymlinks))
+
+        if not _deal_dir:
+            return
+
+        if TFRecordCreater.create_cc_type_pbtxt(_deal_dir):
+            QtWidgets.QMessageBox.information(
+                self, "提示", "CC款式labelmap.pbtxt文件创建成功", QtWidgets.QMessageBox.Yes)
+        else:
+            QtWidgets.QMessageBox.information(
+                self, "提示", "CC款式labelmap.pbtxt文件创建失败", QtWidgets.QMessageBox.Yes)
+
     # Message Dialogs. #
+
     def hasLabels(self):
         if self.noShapes():
             self.errorMessage(
@@ -1691,6 +2238,7 @@ class MainWindow(QtWidgets.QMainWindow):
             defaultOpenDirPath,
             QtWidgets.QFileDialog.ShowDirsOnly |
             QtWidgets.QFileDialog.DontResolveSymlinks))
+        self.dirname = targetDirPath
         self.importDirImages(targetDirPath)
 
     @property

@@ -34,6 +34,11 @@ def get_install_requires():
         'PyYAML',
         'qtpy',
         'termcolor',
+        'opencv-python',
+        'tensorflow',
+        'HiveNetLib',
+        'xlwt',
+        'pandas'
     ]
 
     # Find python binding for qt with priority:

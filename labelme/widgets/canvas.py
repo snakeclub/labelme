@@ -96,7 +96,7 @@ class Canvas(QtWidgets.QWidget):
     @createMode.setter
     def createMode(self, value):
         if value not in ['polygon', 'rectangle', 'circle',
-           'line', 'point', 'linestrip']:
+                         'line', 'point', 'linestrip']:
             raise ValueError('Unsupported createMode: %s' % value)
         self._createMode = value
 
@@ -676,6 +676,8 @@ class Canvas(QtWidgets.QWidget):
             self.update()
         elif key == QtCore.Qt.Key_Return and self.canCloseShape():
             self.finalise()
+        else:
+            self.parent().keyPressEvent(ev)
 
     def setLastLabel(self, text, flags):
         assert text
